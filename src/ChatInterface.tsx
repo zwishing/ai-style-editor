@@ -3,7 +3,7 @@ import { stepCountIs, streamText } from 'ai';
 import type { ChatStatus, ModelMessage } from 'ai';
 import type { Map as MapLibreMap } from 'maplibre-gl';
 import { Bot, CheckIcon, KeyRound, User, Wrench, X } from 'lucide-react';
-import { createMapLibreStyleTools } from '@ai-dropdown-demo/maplibre-style-tools';
+import { createCompactMapLibreStyleTools } from '@ai-dropdown-demo/maplibre-style-tools';
 import { createMoonshotClient, defaultMoonshotApiKey } from './tools';
 import { Button } from './components/ui/button';
 import {
@@ -59,12 +59,17 @@ import {
   PromptInputTools,
   usePromptInputAttachments,
 } from './components/ai-elements/prompt-input';
-import { Reasoning, ReasoningContent, ReasoningTrigger } from './components/ai-elements/reasoning';
 import { Suggestion, Suggestions } from './components/ai-elements/suggestion';
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput } from './components/ai-elements/tool';
+import {
+  compactModelHistory,
+  summarizeCompactToolResult,
+} from './chat-history';
+import type { StyleWorkbenchContext } from './style-workbench-state';
 
 interface ChatInterfaceProps {
   getMap: () => MapLibreMap | null;
+  getWorkbenchContext?: () => StyleWorkbenchContext;
   onClose?: () => void;
 }
 
@@ -79,13 +84,25 @@ interface ToolEntry {
   errorText?: string;
 }
 
+type ChainEntry =
+  | {
+      id: string;
+      type: 'reasoning';
+      content: string;
+      status: 'active' | 'complete';
+    }
+  | {
+      id: string;
+      type: 'tool';
+      tool: ToolEntry;
+    };
+
 interface ChatMessage {
   id: string;
-  role: 'user' | 'assistant' | 'tool';
+  role: 'user' | 'assistant';
   content: string;
-  reasoning?: string;
-  reasoningStreaming?: boolean;
-  tool?: ToolEntry;
+  chain?: ChainEntry[];
+  chainStreaming?: boolean;
 }
 
 interface ModelOption {
@@ -177,13 +194,11 @@ function PromptInputAttachmentsDisplay() {
 
 const roleIcon = (role: ChatMessage['role']) => {
   if (role === 'user') return <User className="size-4" />;
-  if (role === 'tool') return <Wrench className="size-4" />;
   return <Bot className="size-4" />;
 };
 
 const roleLabel = (role: ChatMessage['role']) => {
   if (role === 'user') return '用户';
-  if (role === 'tool') return '工具';
   return '助手';
 };
 
@@ -202,7 +217,116 @@ function PromptSuggestions({ onSelect }: { onSelect: (prompt: string) => void })
   );
 }
 
-export function ChatInterface({ getMap, onClose }: ChatInterfaceProps) {
+function ToolCompactSummary({ output }: { output: unknown }) {
+  if (!output || typeof output !== 'object') {
+    return null;
+  }
+
+  const summary = summarizeCompactToolResult(output);
+  if (!summary.startsWith('Tool result:')) {
+    return null;
+  }
+
+  return (
+    <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs leading-relaxed">
+      {summary}
+    </div>
+  );
+}
+
+function ToolCallPanel({ tool }: { tool: ToolEntry }) {
+  return (
+    <Tool className="mb-0" defaultOpen={false}>
+      <ToolHeader type="dynamic-tool" toolName={tool.toolName} state={tool.state} />
+      <ToolContent>
+        <ToolCompactSummary output={tool.output} />
+        <ToolInput input={tool.input} />
+        <ToolOutput output={tool.output} errorText={tool.errorText} />
+      </ToolContent>
+    </Tool>
+  );
+}
+
+const appendReasoningDelta = (chain: ChainEntry[], text: string): ChainEntry[] => {
+  if (!text) return chain;
+
+  const last = chain.at(-1);
+  if (last?.type === 'reasoning' && last.status === 'active') {
+    return [
+      ...chain.slice(0, -1),
+      {
+        ...last,
+        content: last.content + text,
+      },
+    ];
+  }
+
+  return [
+    ...chain,
+    {
+      id: crypto.randomUUID(),
+      type: 'reasoning',
+      content: text,
+      status: 'active',
+    },
+  ];
+};
+
+const completeReasoningEntries = (chain: ChainEntry[]): ChainEntry[] =>
+  chain.map((entry) =>
+    entry.type === 'reasoning' && entry.status === 'active'
+      ? { ...entry, status: 'complete' }
+      : entry
+  );
+
+const appendToolEntry = (chain: ChainEntry[], tool: ToolEntry): ChainEntry[] => [
+  ...completeReasoningEntries(chain),
+  {
+    id: tool.toolCallId,
+    type: 'tool',
+    tool,
+  },
+];
+
+const updateToolEntry = (
+  chain: ChainEntry[],
+  toolCallId: string,
+  updater: (tool: ToolEntry) => ToolEntry
+): ChainEntry[] =>
+  chain.map((entry) =>
+    entry.type === 'tool' && entry.tool.toolCallId === toolCallId
+      ? {
+          ...entry,
+          tool: updater(entry.tool),
+        }
+      : entry
+  );
+
+const getChainToolCount = (chain: ChainEntry[] = []) =>
+  chain.filter((entry) => entry.type === 'tool').length;
+
+const getToolEntryIndex = (chain: ChainEntry[], entryId: string) =>
+  chain
+    .slice(0, chain.findIndex((entry) => entry.id === entryId) + 1)
+    .filter((entry) => entry.type === 'tool').length;
+
+const getChainOfThoughtLabel = (chain: ChainEntry[] = [], isStreaming: boolean) => {
+  const toolCount = getChainToolCount(chain);
+  if (isStreaming) {
+    return toolCount > 0 ? `思考中 · ${toolCount} 个工具调用` : '思考中';
+  }
+  if (toolCount > 0) {
+    return `Chain of Thought · ${toolCount} 个工具调用`;
+  }
+  return 'Chain of Thought';
+};
+
+const getToolStepStatus = (state: ToolState) => {
+  if (state === 'input-available') return 'active';
+  return 'complete';
+};
+
+export function ChatInterface({ getMap, getWorkbenchContext, onClose }: ChatInterfaceProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [model, setModel] = useState(() => getStoredValue(MODEL_STORAGE_KEY, models[0].id));
   const [apiKey, setApiKey] = useState(() =>
@@ -293,12 +417,15 @@ export function ChatInterface({ getMap, onClose }: ChatInterfaceProps) {
           system:
             'You are a MapLibre style assistant. ' +
             'You must support ALL currently loaded layers, including basemap layers from style.json. ' +
-            'Always call listAllLayers first when user does not provide exact layer id. ' +
-            'Use inspectLayerStyle before changing unfamiliar layers. ' +
-            'For arbitrary layers use setLayerPaintProperty/setLayerLayoutProperty/setLayerVisibility. ' +
-            'After tool calls, provide a concise confirmation.',
+            'Prefer compact tools: use getStyleContext for overview, searchLayers for ambiguous targets, inspectLayersCompact for focused inspection, and applyStyleOperations for edits. ' +
+            'When you need a tool, finish the current reasoning sentence before the tool call, then continue with a new reasoning sentence after the tool result. ' +
+            'Do not request or repeat full style JSON unless explicitly needed. ' +
+            'After edits, summarize changed layer ids and the compact diff only.',
           messages: [...modelMessagesRef.current, newUserModelMessage],
-          tools: createMapLibreStyleTools({ getMap }),
+          tools: createCompactMapLibreStyleTools({
+            getMap,
+            getContext: getWorkbenchContext,
+          }),
           stopWhen: stepCountIs(6),
           providerOptions: {
             moonshotai: {
@@ -315,6 +442,7 @@ export function ChatInterface({ getMap, onClose }: ChatInterfaceProps) {
 
         let fullResponse = '';
         let fullReasoning = '';
+        const compactToolSummaries: string[] = [];
 
         for await (const delta of result.fullStream) {
           if (delta.type === 'reasoning-start') {
@@ -322,8 +450,8 @@ export function ChatInterface({ getMap, onClose }: ChatInterfaceProps) {
               id: assistantMessageId,
               role: 'assistant',
               content: current?.content ?? '',
-              reasoning: current?.reasoning ?? '',
-              reasoningStreaming: true,
+              chain: current?.chain ?? [],
+              chainStreaming: true,
             }));
           } else if (delta.type === 'reasoning-delta') {
             fullReasoning += delta.text;
@@ -331,16 +459,16 @@ export function ChatInterface({ getMap, onClose }: ChatInterfaceProps) {
               id: assistantMessageId,
               role: 'assistant',
               content: current?.content ?? '',
-              reasoning: fullReasoning,
-              reasoningStreaming: true,
+              chain: appendReasoningDelta(current?.chain ?? [], delta.text),
+              chainStreaming: true,
             }));
           } else if (delta.type === 'reasoning-end') {
             upsertAssistantMessage(assistantMessageId, (current) => ({
               id: assistantMessageId,
               role: 'assistant',
               content: current?.content ?? '',
-              reasoning: current?.reasoning ?? fullReasoning,
-              reasoningStreaming: false,
+              chain: completeReasoningEntries(current?.chain ?? []),
+              chainStreaming: false,
             }));
           } else if (delta.type === 'text-delta') {
             fullResponse += delta.text;
@@ -348,50 +476,65 @@ export function ChatInterface({ getMap, onClose }: ChatInterfaceProps) {
               id: assistantMessageId,
               role: 'assistant',
               content: fullResponse,
-              reasoning: current?.reasoning ?? fullReasoning,
-              reasoningStreaming: current?.reasoningStreaming ?? false,
+              chain: current?.chain ?? [],
+              chainStreaming: current?.chainStreaming ?? false,
             }));
           } else if (delta.type === 'tool-call') {
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: crypto.randomUUID(),
-                role: 'tool',
-                content: '',
-                tool: {
+            upsertAssistantMessage(assistantMessageId, (current) => {
+              return {
+                id: assistantMessageId,
+                role: 'assistant',
+                content: current?.content ?? fullResponse,
+                chain: appendToolEntry(current?.chain ?? [], {
                   toolCallId: delta.toolCallId,
                   toolName: delta.toolName,
                   input: delta.input,
                   state: 'input-available',
-                },
-              },
-            ]);
+                }),
+                chainStreaming: true,
+              };
+            });
           } else if (delta.type === 'tool-result') {
-            setMessages((prev) =>
-              prev.map((msg) => {
-                if (!msg.tool || msg.tool.toolCallId !== delta.toolCallId) return msg;
-                const output = delta.output as { success?: boolean; message?: string } | undefined;
-                const success = output?.success !== false;
-                return {
-                  ...msg,
-                  tool: {
-                    ...msg.tool,
-                    output: delta.output,
-                    state: success ? 'output-available' : 'output-error',
-                    errorText: success ? undefined : output?.message ?? '工具执行失败',
-                  },
-                };
-              })
-            );
+            const output = delta.output as { success?: boolean; message?: string } | undefined;
+            compactToolSummaries.push(summarizeCompactToolResult(output ?? {}));
+            upsertAssistantMessage(assistantMessageId, (current) => {
+              const success = output?.success !== false;
+              const nextState: ToolState = success ? 'output-available' : 'output-error';
+              const chain = updateToolEntry(
+                current?.chain ?? [],
+                delta.toolCallId,
+                (toolEntry) => ({
+                  ...toolEntry,
+                  output: delta.output,
+                  state: nextState,
+                  errorText: success ? undefined : output?.message ?? '工具执行失败',
+                })
+              );
+              return {
+                ...current,
+                id: assistantMessageId,
+                role: 'assistant',
+                content: current?.content ?? fullResponse,
+                chain,
+                chainStreaming: false,
+              };
+            });
           }
         }
 
-        const finalResponse = await result.response;
-        modelMessagesRef.current = [
-          ...modelMessagesRef.current,
-          newUserModelMessage,
-          ...finalResponse.messages,
-        ];
+        await result.response;
+        const compactAssistantMessage: ModelMessage = {
+          role: 'assistant',
+          content: [
+            fullResponse,
+            ...compactToolSummaries,
+          ].filter(Boolean).join('\n'),
+        };
+        modelMessagesRef.current = compactModelHistory(
+          modelMessagesRef.current,
+          [newUserModelMessage, compactAssistantMessage],
+          12
+        );
 
         const finalReasoning = await result.reasoningText;
         if (finalReasoning && finalReasoning.trim()) {
@@ -399,8 +542,18 @@ export function ChatInterface({ getMap, onClose }: ChatInterfaceProps) {
             id: assistantMessageId,
             role: 'assistant',
             content: current?.content ?? fullResponse,
-            reasoning: finalReasoning,
-            reasoningStreaming: false,
+            chain:
+              current?.chain?.length
+                ? completeReasoningEntries(current.chain)
+                : [
+                    {
+                      id: crypto.randomUUID(),
+                      type: 'reasoning',
+                      content: finalReasoning,
+                      status: 'complete',
+                    },
+                  ],
+            chainStreaming: false,
           }));
         }
 
@@ -417,7 +570,7 @@ export function ChatInterface({ getMap, onClose }: ChatInterfaceProps) {
         setStatus('error');
       }
     },
-    [effectiveApiKey, getMap, model]
+    [effectiveApiKey, getMap, getWorkbenchContext, model]
   );
 
   return (
@@ -499,21 +652,48 @@ export function ChatInterface({ getMap, onClose }: ChatInterfaceProps) {
                     </div>
 
                     <MessageContent>
-                      {msg.role === 'assistant' && msg.reasoning ? (
-                        <Reasoning isStreaming={Boolean(msg.reasoningStreaming)}>
-                          <ReasoningTrigger />
-                          <ReasoningContent>{msg.reasoning}</ReasoningContent>
-                        </Reasoning>
-                      ) : null}
+                      {msg.role === 'assistant' && msg.chain?.length ? (
+                        <ChainOfThought
+                          className="mb-4"
+                          defaultOpen={Boolean(msg.chainStreaming || msg.chain.length)}
+                        >
+                          <ChainOfThoughtHeader>
+                            {getChainOfThoughtLabel(
+                              msg.chain,
+                              Boolean(msg.chainStreaming)
+                            )}
+                          </ChainOfThoughtHeader>
+                          <ChainOfThoughtContent>
+                            <div className="flex flex-col gap-3">
+                              {msg.chain.map((entry) => {
+                                if (entry.type === 'reasoning') {
+                                  return (
+                                    <ChainOfThoughtStep
+                                      key={entry.id}
+                                      label="思考片段"
+                                      status={entry.status}
+                                    >
+                                      <MessageResponse>{entry.content}</MessageResponse>
+                                    </ChainOfThoughtStep>
+                                  );
+                                }
 
-                      {msg.role === 'tool' && msg.tool ? (
-                        <Tool defaultOpen={false}>
-                          <ToolHeader type="dynamic-tool" toolName={msg.tool.toolName} state={msg.tool.state} />
-                          <ToolContent>
-                            <ToolInput input={msg.tool.input} />
-                            <ToolOutput output={msg.tool.output} errorText={msg.tool.errorText} />
-                          </ToolContent>
-                        </Tool>
+                                const toolIndex = getToolEntryIndex(msg.chain ?? [], entry.id);
+
+                                return (
+                                  <ChainOfThoughtStep
+                                    icon={Wrench}
+                                    key={entry.id}
+                                    label={`工具调用 ${toolIndex}：${entry.tool.toolName}`}
+                                    status={getToolStepStatus(entry.tool.state)}
+                                  >
+                                    <ToolCallPanel tool={entry.tool} />
+                                  </ChainOfThoughtStep>
+                                );
+                              })}
+                            </div>
+                          </ChainOfThoughtContent>
+                        </ChainOfThought>
                       ) : null}
 
                       {msg.content ? <MessageResponse>{msg.content}</MessageResponse> : null}

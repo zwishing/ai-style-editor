@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023", "DOM"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "skipLibCheck": true,
+    "outDir": ".tmp/test-dist",
+    "rootDir": ".",
+    "types": ["node"],
+    "verbatimModuleSyntax": true
+  },
+  "include": [
+    "packages/maplibre-style-tools/src/**/*.ts",
+    "src/**/*.test.ts",
+    "src/chat-history.ts",
+    "src/style-workbench-state.ts"
+  ],
+  "exclude": ["node_modules", ".tmp/test-dist"]
+}

@@ -36,11 +36,18 @@ import { Input } from "./components/ui/input";
 import { InputGroup, InputGroupInput } from "./components/ui/input-group";
 import { ScrollArea } from "./components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
+import {
+  createInitialStyleWorkbenchContext,
+  nextStyleRevision,
+  type StyleWorkbenchContext,
+  updateStyleWorkbenchContext,
+} from "./style-workbench-state";
 import "maplibre-gl/dist/maplibre-gl.css";
 
 interface MapStylePreviewProps {
   onMapReady?: (map: maplibregl.Map | null) => void;
   onOpenAi?: () => void;
+  onWorkbenchContextChange?: (context: StyleWorkbenchContext) => void;
 }
 
 interface LayerPanelItem {
@@ -149,11 +156,15 @@ const getLayerTypeIcon = (type: string) => {
 export function MapStylePreview({
   onMapReady,
   onOpenAi,
+  onWorkbenchContextChange,
 }: MapStylePreviewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const styleSourcesRef = useRef<StyleSourceItem[]>([]);
   const activeStyleSourceIdRef = useRef<string | null>(null);
+  const workbenchContextRef = useRef<StyleWorkbenchContext>(
+    createInitialStyleWorkbenchContext(),
+  );
 
   const [styleSources, setStyleSources] = useState<StyleSourceItem[]>([]);
   const [activeStyleSourceId, setActiveStyleSourceId] = useState<string | null>(
@@ -171,6 +182,14 @@ export function MapStylePreview({
   const [draftSourceName, setDraftSourceName] = useState("");
   const [draftSourceUrl, setDraftSourceUrl] = useState("");
 
+  const publishWorkbenchContext = useCallback(
+    (context: StyleWorkbenchContext) => {
+      workbenchContextRef.current = context;
+      onWorkbenchContextChange?.(context);
+    },
+    [onWorkbenchContextChange],
+  );
+
   useEffect(() => {
     styleSourcesRef.current = styleSources;
   }, [styleSources]);
@@ -182,7 +201,12 @@ export function MapStylePreview({
   const setActiveStyleSource = useCallback((sourceId: string | null) => {
     activeStyleSourceIdRef.current = sourceId;
     setActiveStyleSourceId(sourceId);
-  }, []);
+    publishWorkbenchContext(
+      updateStyleWorkbenchContext(workbenchContextRef.current, {
+        activeSourceId: sourceId,
+      }),
+    );
+  }, [publishWorkbenchContext]);
 
   const syncCurrentMapStyle = useCallback((map: maplibregl.Map) => {
     const currentStyle = map.getStyle();
@@ -211,7 +235,8 @@ export function MapStylePreview({
           : source,
       ),
     );
-  }, []);
+    publishWorkbenchContext(nextStyleRevision(workbenchContextRef.current));
+  }, [publishWorkbenchContext]);
 
   const activateStyleSource = useCallback(
     (sourceId: string) => {
@@ -449,6 +474,14 @@ export function MapStylePreview({
       return filteredLayers[0]?.id ?? null;
     });
   }, [filteredLayers]);
+
+  useEffect(() => {
+    publishWorkbenchContext(
+      updateStyleWorkbenchContext(workbenchContextRef.current, {
+        selectedLayerId,
+      }),
+    );
+  }, [publishWorkbenchContext, selectedLayerId]);
 
   return (
     <section className="relative h-full w-full bg-background">

@@ -147,6 +147,9 @@ importers:
 
   packages/maplibre-style-tools:
     dependencies:
+      '@maplibre/maplibre-gl-style-spec':
+        specifier: ^24.7.0
+        version: 24.7.0
       ai:
         specifier: ^6.0.141
         version: 6.0.141(zod@4.3.6)
