@@ -28,3 +28,4 @@ tmp-map*.png
 *.njsproj
 *.sln
 *.sw?
+.omx/

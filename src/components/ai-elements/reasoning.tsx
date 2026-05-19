@@ -46,7 +46,6 @@ export const useReasoning = () => {
 
 export type ReasoningProps = ComponentProps<typeof Collapsible> & {
   isStreaming?: boolean;
-  autoClose?: boolean;
   open?: boolean;
   defaultOpen?: boolean;
   onOpenChange?: (open: boolean) => void;
@@ -60,7 +59,6 @@ export const Reasoning = memo(
   ({
     className,
     isStreaming = false,
-    autoClose = true,
     open,
     defaultOpen,
     onOpenChange,
@@ -110,7 +108,6 @@ export const Reasoning = memo(
     useEffect(() => {
       if (
         hasEverStreamedRef.current &&
-        autoClose &&
         !isStreaming &&
         isOpen &&
         !hasAutoClosed
@@ -122,7 +119,7 @@ export const Reasoning = memo(
 
         return () => clearTimeout(timer);
       }
-    }, [autoClose, isStreaming, isOpen, setIsOpen, hasAutoClosed]);
+    }, [isStreaming, isOpen, setIsOpen, hasAutoClosed]);
 
     const handleOpenChange = useCallback(
       (newOpen: boolean) => {
@@ -204,7 +201,7 @@ export const ReasoningTrigger = memo(
 export type ReasoningContentProps = ComponentProps<
   typeof CollapsibleContent
 > & {
-  children: ReactNode;
+  children: string;
 };
 
 const streamdownPlugins = { cjk, code, math, mermaid };
@@ -219,11 +216,7 @@ export const ReasoningContent = memo(
       )}
       {...props}
     >
-      {typeof children === "string" ? (
-        <Streamdown plugins={streamdownPlugins}>{children}</Streamdown>
-      ) : (
-        children
-      )}
+      <Streamdown plugins={streamdownPlugins}>{children}</Streamdown>
     </CollapsibleContent>
   )
 );

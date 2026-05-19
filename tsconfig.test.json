@@ -15,6 +15,7 @@
     "packages/maplibre-style-tools/src/**/*.ts",
     "src/**/*.test.ts",
     "src/chat-history.ts",
+    "src/model-settings.ts",
     "src/style-workbench-state.ts"
   ],
   "exclude": ["node_modules", ".tmp/test-dist"]

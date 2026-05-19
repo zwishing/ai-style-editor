@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -190,7 +190,7 @@ export const EnvironmentVariableValue = ({
 
   const displayValue = showValues
     ? value
-    : "*".repeat(Math.min(value.length, 20));
+    : "•".repeat(Math.min(value.length, 20));
 
   return (
     <span
@@ -265,7 +265,7 @@ export const EnvironmentVariableCopyButton = ({
   const { name, value } = useContext(EnvironmentVariableContext);
 
   const getTextToCopy = useCallback((): string => {
-    const formatMap: Record<"export" | "name" | "value", () => string> = {
+    const formatMap = {
       export: () => `export ${name}="${value}"`,
       name: () => name,
       value: () => value,
@@ -322,7 +322,3 @@ export const EnvironmentVariableRequired = ({
     {children ?? "Required"}
   </Badge>
 );
-
-
-
-

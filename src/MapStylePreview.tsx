@@ -4,15 +4,18 @@ import {
   Bot,
   Check,
   Circle,
+  Download,
   Layers3,
   Loader2,
   Plus,
+  Redo2,
   Slash,
   Square,
   Trash2,
   Type,
+  Undo2,
+  X,
 } from "lucide-react";
-import { cn } from "./lib/utils";
 import { DEMO_STYLE_URL } from "./tools";
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert";
 import { Badge } from "./components/ui/badge";
@@ -42,6 +45,18 @@ import {
   type StyleWorkbenchContext,
   updateStyleWorkbenchContext,
 } from "./style-workbench-state";
+import {
+  canRedoStyleHistory,
+  canUndoStyleHistory,
+  createStyleHistory,
+  getExportStyleFilename,
+  recordStyleHistoryChange,
+  replaceStyleHistoryPresent,
+  redoStyleHistory,
+  serializeStyleForExport,
+  type StyleHistory,
+  undoStyleHistory,
+} from "./style-history";
 import "maplibre-gl/dist/maplibre-gl.css";
 
 interface MapStylePreviewProps {
@@ -63,6 +78,7 @@ interface StyleSourceItem {
   input: string;
   layerCount: number;
   style: StyleSpecification;
+  history: StyleHistory<StyleSpecification>;
   locked: boolean;
 }
 
@@ -162,6 +178,7 @@ export function MapStylePreview({
   const mapRef = useRef<maplibregl.Map | null>(null);
   const styleSourcesRef = useRef<StyleSourceItem[]>([]);
   const activeStyleSourceIdRef = useRef<string | null>(null);
+  const historySyncModeRef = useRef<"record" | "replace">("record");
   const workbenchContextRef = useRef<StyleWorkbenchContext>(
     createInitialStyleWorkbenchContext(),
   );
@@ -182,6 +199,17 @@ export function MapStylePreview({
   const [draftSourceName, setDraftSourceName] = useState("");
   const [draftSourceUrl, setDraftSourceUrl] = useState("");
 
+  const updateStyleSources = useCallback(
+    (updater: (sources: StyleSourceItem[]) => StyleSourceItem[]) => {
+      setStyleSources((prev) => {
+        const next = updater(prev);
+        styleSourcesRef.current = next;
+        return next;
+      });
+    },
+    [],
+  );
+
   const publishWorkbenchContext = useCallback(
     (context: StyleWorkbenchContext) => {
       workbenchContextRef.current = context;
@@ -198,45 +226,63 @@ export function MapStylePreview({
     activeStyleSourceIdRef.current = activeStyleSourceId;
   }, [activeStyleSourceId]);
 
-  const setActiveStyleSource = useCallback((sourceId: string | null) => {
-    activeStyleSourceIdRef.current = sourceId;
-    setActiveStyleSourceId(sourceId);
-    publishWorkbenchContext(
-      updateStyleWorkbenchContext(workbenchContextRef.current, {
-        activeSourceId: sourceId,
-      }),
-    );
-  }, [publishWorkbenchContext]);
+  const setActiveStyleSource = useCallback(
+    (sourceId: string | null) => {
+      activeStyleSourceIdRef.current = sourceId;
+      setActiveStyleSourceId(sourceId);
+      publishWorkbenchContext(
+        updateStyleWorkbenchContext(workbenchContextRef.current, {
+          activeSourceId: sourceId,
+        }),
+      );
+    },
+    [publishWorkbenchContext],
+  );
 
-  const syncCurrentMapStyle = useCallback((map: maplibregl.Map) => {
-    const currentStyle = map.getStyle();
-    if (!currentStyle) {
-      setLayers([]);
-      return;
-    }
+  const syncCurrentMapStyle = useCallback(
+    (map: maplibregl.Map) => {
+      const currentStyle = map.getStyle();
+      if (!currentStyle) {
+        setLayers([]);
+        return;
+      }
 
-    const normalizedStyle = cloneStyle(currentStyle as StyleSpecification);
-    const nextLayers = collectLayerPanelItems(normalizedStyle);
-    setLayers(nextLayers);
+      const normalizedStyle = cloneStyle(currentStyle as StyleSpecification);
+      const nextLayers = collectLayerPanelItems(normalizedStyle);
+      setLayers(nextLayers);
 
-    const activeId = activeStyleSourceIdRef.current;
-    if (!activeId) {
-      return;
-    }
+      const activeId = activeStyleSourceIdRef.current;
+      if (!activeId) {
+        return;
+      }
 
-    setStyleSources((prev) =>
-      prev.map((source) =>
-        source.id === activeId
-          ? {
-              ...source,
-              layerCount: nextLayers.length,
-              style: normalizedStyle,
-            }
-          : source,
-      ),
-    );
-    publishWorkbenchContext(nextStyleRevision(workbenchContextRef.current));
-  }, [publishWorkbenchContext]);
+      const historySyncMode = historySyncModeRef.current;
+      historySyncModeRef.current = "record";
+      updateStyleSources((prev) =>
+        prev.map((source) =>
+          source.id === activeId
+            ? (() => {
+                const history =
+                  historySyncMode === "replace"
+                    ? replaceStyleHistoryPresent(
+                        source.history,
+                        normalizedStyle,
+                      )
+                    : recordStyleHistoryChange(source.history, normalizedStyle);
+                return {
+                  ...source,
+                  layerCount: nextLayers.length,
+                  style: history.present,
+                  history,
+                };
+              })()
+            : source,
+        ),
+      );
+      publishWorkbenchContext(nextStyleRevision(workbenchContextRef.current));
+    },
+    [publishWorkbenchContext, updateStyleSources],
+  );
 
   const activateStyleSource = useCallback(
     (sourceId: string) => {
@@ -253,6 +299,7 @@ export function MapStylePreview({
       setStyleLoadError(false);
       setPanelOpen(true);
       setStyleLoadStatus(`已切换到 ${source.name}。`);
+      historySyncModeRef.current = "replace";
       map.setStyle(cloneStyle(source.style), { diff: false });
     },
     [setActiveStyleSource],
@@ -297,10 +344,11 @@ export function MapStylePreview({
           input: trimmedInput,
           layerCount: normalizedStyle.layers?.length ?? 0,
           style: normalizedStyle,
+          history: createStyleHistory(normalizedStyle),
           locked,
         };
 
-        setStyleSources((prev) => {
+        updateStyleSources((prev) => {
           if (prev.some((source) => source.id === nextId)) {
             return prev.map((source) =>
               source.id === nextId ? nextItem : source,
@@ -313,6 +361,7 @@ export function MapStylePreview({
         if (openPanelOnSuccess) {
           setPanelOpen(true);
         }
+        historySyncModeRef.current = "replace";
         map.setStyle(cloneStyle(normalizedStyle), { diff: false });
         setStyleLoadStatus(`已添加 ${trimmedName}。`);
         return true;
@@ -331,7 +380,7 @@ export function MapStylePreview({
         }
       }
     },
-    [setActiveStyleSource],
+    [setActiveStyleSource, updateStyleSources],
   );
 
   const handleCreateSource = useCallback(async () => {
@@ -363,7 +412,7 @@ export function MapStylePreview({
       const nextSources = styleSourcesRef.current.filter(
         (source) => source.id !== sourceId,
       );
-      setStyleSources(nextSources);
+      updateStyleSources(() => nextSources);
 
       if (activeStyleSourceIdRef.current !== sourceId) {
         setStyleLoadError(false);
@@ -378,6 +427,7 @@ export function MapStylePreview({
         setActiveStyleSource(null);
         setLayers([]);
         setSelectedLayerId(null);
+        historySyncModeRef.current = "replace";
         map?.setStyle(cloneStyle(EMPTY_BASE_STYLE), { diff: false });
         setStyleLoadError(false);
         setStyleLoadStatus("当前没有已加载的样式源。");
@@ -385,13 +435,14 @@ export function MapStylePreview({
       }
 
       setActiveStyleSource(nextActive.id);
+      historySyncModeRef.current = "replace";
       map.setStyle(cloneStyle(nextActive.style), { diff: false });
       setStyleLoadError(false);
       setStyleLoadStatus(
         `已删除 ${targetSource.name}，并切换到 ${nextActive.name}。`,
       );
     },
-    [setActiveStyleSource],
+    [setActiveStyleSource, updateStyleSources],
   );
 
   useEffect(() => {
@@ -450,6 +501,95 @@ export function MapStylePreview({
     [activeStyleSourceId, styleSources],
   );
 
+  const canUndoActiveStyle = activeStyleSource
+    ? canUndoStyleHistory(activeStyleSource.history)
+    : false;
+  const canRedoActiveStyle = activeStyleSource
+    ? canRedoStyleHistory(activeStyleSource.history)
+    : false;
+
+  const applyHistoryResult = useCallback(
+    (
+      sourceId: string,
+      result: {
+        history: StyleHistory<StyleSpecification>;
+        style: StyleSpecification;
+      },
+      statusMessage: string,
+    ) => {
+      const map = mapRef.current;
+      if (!map) {
+        return;
+      }
+
+      updateStyleSources((prev) =>
+        prev.map((source) =>
+          source.id === sourceId
+            ? {
+                ...source,
+                layerCount: result.style.layers?.length ?? 0,
+                style: result.history.present,
+                history: result.history,
+              }
+            : source,
+        ),
+      );
+      historySyncModeRef.current = "replace";
+      map.setStyle(cloneStyle(result.style), { diff: false });
+      setStyleLoadError(false);
+      setStyleLoadStatus(statusMessage);
+    },
+    [updateStyleSources],
+  );
+
+  const handleUndoStyle = useCallback(() => {
+    const sourceId = activeStyleSourceIdRef.current;
+    const source = styleSourcesRef.current.find((item) => item.id === sourceId);
+    if (!source || !canUndoStyleHistory(source.history)) {
+      return;
+    }
+
+    applyHistoryResult(
+      source.id,
+      undoStyleHistory(source.history),
+      `已撤销 ${source.name} 的上一次样式修改。`,
+    );
+  }, [applyHistoryResult]);
+
+  const handleRedoStyle = useCallback(() => {
+    const sourceId = activeStyleSourceIdRef.current;
+    const source = styleSourcesRef.current.find((item) => item.id === sourceId);
+    if (!source || !canRedoStyleHistory(source.history)) {
+      return;
+    }
+
+    applyHistoryResult(
+      source.id,
+      redoStyleHistory(source.history),
+      `已重做 ${source.name} 的样式修改。`,
+    );
+  }, [applyHistoryResult]);
+
+  const handleExportStyle = useCallback(() => {
+    if (!activeStyleSource) {
+      return;
+    }
+
+    const blob = new Blob([serializeStyleForExport(activeStyleSource.style)], {
+      type: "application/json;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = getExportStyleFilename(activeStyleSource.name);
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+    setStyleLoadError(false);
+    setStyleLoadStatus(`已导出 ${activeStyleSource.name}。`);
+  }, [activeStyleSource]);
+
   const filteredLayers = useMemo(() => {
     const keyword = layerFilter.trim().toLowerCase();
     if (!keyword) {
@@ -497,18 +637,56 @@ export function MapStylePreview({
           <Layers3 data-icon="inline-start" />
           图层
         </Button>
-        <Button aria-label="打开 AI 助手" onClick={onOpenAi} size="icon-lg">
+        <Button
+          aria-label="撤销样式修改"
+          disabled={!canUndoActiveStyle}
+          onClick={handleUndoStyle}
+          size="icon"
+          type="button"
+          variant="outline"
+        >
+          <Undo2 />
+        </Button>
+        <Button
+          aria-label="重做样式修改"
+          disabled={!canRedoActiveStyle}
+          onClick={handleRedoStyle}
+          size="icon"
+          type="button"
+          variant="outline"
+        >
+          <Redo2 />
+        </Button>
+        <Button
+          aria-label="导出当前 style.json"
+          disabled={!activeStyleSource}
+          onClick={handleExportStyle}
+          size="icon"
+          type="button"
+          variant="outline"
+        >
+          <Download />
+        </Button>
+        <Button aria-label="打开 AI 助手" onClick={onOpenAi} size="icon">
           <Bot />
         </Button>
       </div>
 
       {panelOpen ? (
-        <Card className="absolute top-16 bottom-4 left-4 z-10 flex w-[min(24rem,calc(100vw-2rem))] flex-col overflow-hidden">
-          <CardHeader className="border-b">
-            <CardAction>
-              <Badge variant="secondary">{styleSources.length}</Badge>
-            </CardAction>
+        <Card className="absolute top-16 bottom-4 left-4 z-10 w-[min(24rem,calc(100vw-2rem))] pt-0">
+          <CardHeader className="flex min-h-14 flex-row items-center justify-between gap-3 border-b">
             <CardTitle>图层面板</CardTitle>
+            <CardAction className="self-center">
+              <Button
+                aria-label="关闭图层面板"
+                onClick={() => setPanelOpen(false)}
+                size="icon"
+                type="button"
+                variant="ghost"
+              >
+                <X />
+              </Button>
+            </CardAction>
           </CardHeader>
 
           <CardContent className="min-h-0 flex-1">
@@ -544,76 +722,53 @@ export function MapStylePreview({
                   </Alert>
 
                   <Card className="min-h-0 flex-1" size="sm">
-                    <CardContent className="min-h-0 flex-1 p-3">
-                      <ScrollArea className="h-full rounded-lg border">
-                        <div className="flex flex-col gap-2 p-2">
+                    <CardContent className="min-h-0 flex-1">
+                      <ScrollArea className="h-full">
+                        <div className="flex flex-col gap-2">
                           {styleSources.map((source) => {
                             const isActive = activeStyleSourceId === source.id;
 
                             return (
                               <div
-                                className={cn(
-                                  "group flex items-center gap-2 rounded-lg border px-2 py-2 transition-colors",
-                                  isActive
-                                    ? "bg-accent"
-                                    : "bg-background hover:bg-accent/40",
-                                )}
+                                className="flex items-center gap-2"
                                 key={source.id}
                               >
-                                <button
-                                  className="min-w-0 flex-1 text-left"
+                                <Button
+                                  className="h-auto min-w-0 flex-1 justify-between"
                                   onClick={() => activateStyleSource(source.id)}
                                   type="button"
+                                  variant={isActive ? "secondary" : "ghost"}
                                 >
-                                  <div className="flex items-center gap-2">
-                                    <span className="truncate text-sm font-medium">
-                                      {source.name}
+                                  <span className="min-w-0 text-left">
+                                    <span className="flex items-center gap-2">
+                                      <span className="truncate">
+                                        {source.name}
+                                      </span>
+                                      <Badge variant="outline">
+                                        {source.layerCount}
+                                      </Badge>
                                     </span>
-                                    <Badge variant="outline">
-                                      {source.layerCount}
-                                    </Badge>
-                                  </div>
-                                  <div className="truncate text-xs text-muted-foreground">
-                                    {source.input}
-                                  </div>
-                                </button>
+                                    <span className="block truncate text-xs text-muted-foreground">
+                                      {source.input}
+                                    </span>
+                                  </span>
 
-                                <div
-                                  className={cn(
-                                    "flex items-center gap-1 transition-opacity",
-                                    isActive
-                                      ? "opacity-100"
-                                      : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
-                                  )}
-                                >
+                                  {isActive ? <Check /> : null}
+                                </Button>
+
+                                {!source.locked ? (
                                   <Button
-                                    aria-label={`激活 ${source.name}`}
-                                    className="size-7"
-                                    disabled={isActive}
+                                    aria-label={`删除 ${source.name}`}
                                     onClick={() =>
-                                      activateStyleSource(source.id)
+                                      handleRemoveStyleSource(source.id)
                                     }
                                     size="icon"
                                     type="button"
                                     variant="ghost"
                                   >
-                                    <Check className="size-4" />
+                                    <Trash2 />
                                   </Button>
-                                  {!source.locked ? (
-                                    <Button
-                                      aria-label={`删除 ${source.name}`}
-                                      className="size-7"
-                                      onClick={() =>
-                                        handleRemoveStyleSource(source.id)
-                                      }
-                                      size="icon"
-                                      type="button"
-                                      variant="ghost"
-                                    >
-                                      <Trash2 className="size-4" />
-                                    </Button>
-                                  ) : null}
-                                </div>
+                                ) : null}
                               </div>
                             );
                           })}
@@ -627,7 +782,7 @@ export function MapStylePreview({
               <TabsContent className="min-h-0 flex-1" value="layers">
                 <div className="flex h-full min-h-0 flex-col gap-3">
                   <Card size="sm">
-                    <CardContent className="flex flex-col gap-2 p-3">
+                    <CardContent className="flex flex-col gap-2">
                       <div className="flex items-center justify-between gap-2">
                         <span className="truncate text-sm font-medium">
                           {activeStyleSource?.name ?? "当前没有激活的源"}
@@ -650,15 +805,15 @@ export function MapStylePreview({
                     <CardHeader>
                       <CardTitle>图层列表</CardTitle>
                     </CardHeader>
-                    <CardContent className="min-h-0 flex-1 p-3 pt-0">
-                      <ScrollArea className="h-full rounded-lg border">
-                        <div className="flex flex-col gap-1 p-2">
+                    <CardContent className="min-h-0 flex-1">
+                      <ScrollArea className="h-full">
+                        <div className="flex flex-col gap-1">
                           {filteredLayers.map((layer) => {
                             const LayerTypeIcon = getLayerTypeIcon(layer.type);
                             return (
                               <Button
                                 key={layer.id}
-                                className="w-full justify-start gap-2"
+                                className="w-full justify-start"
                                 size="sm"
                                 type="button"
                                 variant={
@@ -668,20 +823,20 @@ export function MapStylePreview({
                                 }
                                 onClick={() => setSelectedLayerId(layer.id)}
                               >
-                                <LayerTypeIcon className="text-muted-foreground" />
+                                <LayerTypeIcon />
                                 <span className="truncate">{layer.id}</span>
                               </Button>
                             );
                           })}
 
                           {activeStyleSource && filteredLayers.length === 0 ? (
-                            <div className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground">
+                            <div className="text-sm text-muted-foreground">
                               当前源没有匹配的图层。
                             </div>
                           ) : null}
 
                           {!activeStyleSource ? (
-                            <div className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground">
+                            <div className="text-sm text-muted-foreground">
                               请先激活一个源。
                             </div>
                           ) : null}
@@ -697,7 +852,7 @@ export function MapStylePreview({
       ) : null}
 
       <Dialog open={sourceDialogOpen} onOpenChange={setSourceDialogOpen}>
-        <DialogContent className="border bg-background shadow-lg">
+        <DialogContent>
           <DialogHeader>
             <DialogTitle>添加源</DialogTitle>
             <DialogDescription>
@@ -750,7 +905,6 @@ export function MapStylePreview({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
     </section>
   );
 }
