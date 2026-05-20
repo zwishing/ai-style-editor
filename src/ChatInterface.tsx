@@ -969,7 +969,7 @@ export function ChatInterface({
   );
 
   return (
-    <Card className="h-full min-h-0 pt-0">
+    <Card className="h-full min-h-0">
       <CardHeader className="flex min-h-14 flex-row items-center justify-between gap-3 border-b">
         <div className="min-w-0">
           <CardTitle>AI 助手</CardTitle>
@@ -1058,7 +1058,13 @@ export function ChatInterface({
                     from={msg.role === "user" ? "user" : "assistant"}
                     key={msg.id}
                   >
-                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <div
+                      className={
+                        msg.role === "user"
+                          ? "flex items-center justify-end gap-2 text-xs text-muted-foreground"
+                          : "flex items-center gap-2 text-xs text-muted-foreground"
+                      }
+                    >
                       {roleIcon(msg.role)}
                       <span>{roleLabel(msg.role)}</span>
                     </div>

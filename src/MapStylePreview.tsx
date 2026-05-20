@@ -674,7 +674,7 @@ export function MapStylePreview({
 
       {panelOpen ? (
         <Card className="absolute top-16 bottom-4 left-4 z-10 w-[min(24rem,calc(100vw-2rem))] pt-0">
-          <CardHeader className="flex min-h-14 flex-row items-center justify-between gap-3 border-b">
+          <CardHeader className="flex h-11 flex-row items-center justify-between gap-2 py-0 shadow-[inset_0_-1px_hsl(var(--border))]">
             <CardTitle>图层面板</CardTitle>
             <CardAction className="self-center">
               <Button
